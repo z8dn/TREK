@@ -1,0 +1,80 @@
+name: Deploy to Fly.io
+
+# Builds the image on the GitHub runner, pushes it to registry.fly.io and
+# deploys. First run also creates the Fly app and its volume.
+#
+# Setup (repo Settings → Secrets and variables → Actions):
+#   secrets:   FLY_API_TOKEN (Fly org token), TREK_ENCRYPTION_KEY,
+#              TREK_ADMIN_EMAIL, TREK_ADMIN_PASSWORD (first boot only)
+#   variables: FLY_APP, FLY_REGION, optional FLY_ORG and PUBLIC_URL
+# The job is skipped while FLY_APP is unset.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# SQLite on a single machine: never run two deploys at once.
+concurrency:
+  group: fly-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: vars.FLY_APP != ''
+    runs-on: ubuntu-latest
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      FLY_APP: ${{ vars.FLY_APP }}
+      FLY_REGION: ${{ vars.FLY_REGION }}
+      FLY_ORG: ${{ vars.FLY_ORG || 'personal' }}
+      PUBLIC_URL: ${{ vars.PUBLIC_URL || format('https://{0}.fly.dev', vars.FLY_APP) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Check configuration
+        run: |
+          missing=""
+          [ -n "$FLY_API_TOKEN" ] || missing="$missing FLY_API_TOKEN"
+          [ -n "$FLY_REGION" ] || missing="$missing FLY_REGION"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repo secret/variable:$missing"
+            exit 1
+          fi
+
+      - name: Ensure app and volume exist
+        run: |
+          flyctl machines list -a "$FLY_APP" >/dev/null 2>&1 \
+            || flyctl apps create "$FLY_APP" --org "$FLY_ORG"
+          flyctl volumes list -a "$FLY_APP" --json \
+            | jq -e '.[] | select(.name == "trek_data")' >/dev/null \
+            || flyctl volumes create trek_data -a "$FLY_APP" -r "$FLY_REGION" -s 3 --yes
+
+      - name: Stage secrets
+        env:
+          ENCRYPTION_KEY: ${{ secrets.TREK_ENCRYPTION_KEY }}
+          ADMIN_EMAIL: ${{ secrets.TREK_ADMIN_EMAIL }}
+          ADMIN_PASSWORD: ${{ secrets.TREK_ADMIN_PASSWORD }}
+        run: |
+          set --
+          for name in ENCRYPTION_KEY ADMIN_EMAIL ADMIN_PASSWORD; do
+            value=$(printenv "$name" || true)
+            if [ -n "$value" ]; then set -- "$@" "$name=$value"; fi
+          done
+          if [ "$#" -gt 0 ]; then
+            flyctl secrets set --stage -a "$FLY_APP" "$@"
+          fi
+
+      - name: Build on runner and deploy
+        run: |
+          flyctl deploy -a "$FLY_APP" \
+            --local-only \
+            --ha=false \
+            --primary-region "$FLY_REGION" \
+            --build-arg APP_VERSION="${GITHUB_SHA::7}" \
+            -e APP_URL="$PUBLIC_URL" \
+            -e ALLOWED_ORIGINS="$PUBLIC_URL"

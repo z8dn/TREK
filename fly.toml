@@ -1,0 +1,43 @@
+# Fly.io config for this fork. App name and region are not set here: the
+# Deploy to Fly.io workflow passes them from the FLY_APP / FLY_REGION repo
+# variables, so they live in one place.
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3000"
+  TZ = "UTC"
+  TRUST_PROXY = "1"
+  FORCE_HTTPS = "true"
+
+[processes]
+  # A Fly machine mounts one volume, TREK writes to two dirs: keep uploads
+  # inside the data volume, then hand over to the image's normal entrypoint.
+  app = "sh -c 'mkdir -p /app/data/uploads && rm -rf /app/uploads && ln -s /app/data/uploads /app/uploads && exec /usr/local/bin/trek-entrypoint'"
+
+[mounts]
+  source = "trek_data"
+  destination = "/app/data"
+  processes = ["app"]
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  # Reminders and scheduled tasks run in-process: keep the machine up.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "30s"
+    timeout = "5s"
+    method = "GET"
+    path = "/api/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"

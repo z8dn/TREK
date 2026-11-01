@@ -69,12 +69,16 @@ jobs:
             flyctl secrets set --stage -a "$FLY_APP" "$@"
           fi
 
+      # APP_VERSION must be the release version (as upstream's image build
+      # passes it): the admin update check compares it to the latest GitHub
+      # release, and a commit SHA never compares as up to date.
       - name: Build on runner and deploy
         run: |
           flyctl deploy -a "$FLY_APP" \
             --local-only \
             --ha=false \
             --primary-region "$FLY_REGION" \
-            --build-arg APP_VERSION="${GITHUB_SHA::7}" \
+            --build-arg APP_VERSION="$(jq -r .version package.json)" \
+            --image-label "${GITHUB_SHA::7}" \
             -e APP_URL="$PUBLIC_URL" \
             -e ALLOWED_ORIGINS="$PUBLIC_URL"
